@@ -4,6 +4,7 @@
 // std
 #include <vector>
 #include <cstdint>
+#include <chrono>
 
 // WinAPI
 #include <combaseapi.h>
@@ -11,8 +12,7 @@
 namespace PING
 {
 
-constexpr const int SEC_MS = 1e9;
-constexpr const int SEC = 1;
+constexpr const auto SECOND = std::chrono::seconds(1);
 
 std::vector<uint8_t> get_guid();
 int init_winsock();

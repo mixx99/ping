@@ -73,13 +73,13 @@ void fill_icmp_packet(Packet& packet)
 void deserialize(Packet& dest, const std::vector<uint8_t>& ip_packet)
 {
   const int ip_packet_offset = get_header_len(deserialize_ipbuff(ip_packet));
-  dest.type = ip_packet[0 + ip_packet_offset];
-  dest.code = ip_packet[1 + ip_packet_offset];
-  dest.crc = (ip_packet[2 + ip_packet_offset] << 8) | (ip_packet[3 + ip_packet_offset] & 0xFF);
-  memcpy(&dest.crc, &ip_packet[2 + ip_packet_offset], 2);
-  dest.crc = 123;
-  for (size_t i = 0, j = 4 + ip_packet_offset; i < SIZE_OF_PACKET_DATA && j < ip_packet.size(); ++j, ++i)
-    dest.data[i] = ip_packet[j];
+  const uint8_t* icmp_packet = &ip_packet[ip_packet_offset];
+  dest.type = icmp_packet[0];
+  dest.code = icmp_packet[1];
+  dest.crc = (icmp_packet[2] << 8) | (icmp_packet[3] & 0xFF);
+  memcpy(&dest.crc, &icmp_packet[2], 2);
+  for (size_t i = 0; i < SIZE_OF_PACKET_DATA && i < ip_packet.size() - ip_packet_offset; ++i)
+    dest.data[i] = icmp_packet[i + 4];
 }
 
 } // namespace PING

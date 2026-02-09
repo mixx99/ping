@@ -58,10 +58,7 @@ int unblock_socket(int sockfd)
   uint32_t ul = 1;
   res = ioctlsocket(sockfd, FIONBIO, (unsigned long*) &ul);
   if (res == SOCKET_ERROR)
-  {
-    print_error("Failed to make socket unblock");
     return -1;
-  }
   return 0;
 }
 

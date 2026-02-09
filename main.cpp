@@ -14,8 +14,6 @@
 #include <winsock.h>
 #include <ws2tcpip.h>
 
-//#define DATADUMP
-
 enum WinErrors
 {
     WOULDBLOCK = 10035,
@@ -45,10 +43,17 @@ int main(int argc, char *argv[])
   std::cout << "Start pinging IP: " << argv[1] << '\n';
 
   int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-  PING::unblock_socket(sockfd);
-
-//  int ttl_value = 1;
-//  setsockopt(sockfd, IPPROTO_ICMP, IP_TTL, (const char*)&ttl_value, sizeof(ttl_value));
+  if(sockfd == INVALID_SOCKET)
+  {
+    PING::print_error("Failed to create socket.");
+    return -3;
+  }
+  int unblock_result = PING::unblock_socket(sockfd);
+  if(unblock_result < 0)
+  {
+    PING::print_error("Failed to unblock socket");
+    return -4;
+  }
 
   struct sockaddr_in local_address;
   memset(&local_address, 0, sizeof(local_address));
@@ -61,7 +66,10 @@ int main(int argc, char *argv[])
   dest_address.sin_addr.s_addr = inet_addr(argv[1]);
 
   bind(sockfd, (struct sockaddr *)&local_address, sizeof(local_address));
-  connect(sockfd, (struct sockaddr *)&dest_address, sizeof(dest_address));
+  // connect(sockfd, (struct sockaddr *)&dest_address, sizeof(dest_address));
+
+  int ttl = 1;
+  setsockopt(sockfd, IPPROTO_IP, IP_TTL, (char*)&ttl, sizeof(ttl));
 
   fd_set writefds;
   fd_set readfds;
@@ -71,12 +79,13 @@ int main(int argc, char *argv[])
   timeout.tv_sec = 4;
 
   int sent_packet = 0;
+  int failed_to_send = 0;
   int recv_packet = 0;
   int damaged_packet = 0;
-  constexpr const int recv_timeout = PING::SEC * 5;
+  const auto RECV_MAX_TIMEOUT = PING::SECOND * 5;
 
   bool is_one_second_past = true;
-  constexpr const int max_packets = 4;
+  const int max_packets = 4;
 
   auto send_timer = sysclock::now();
   auto recv_timer = sysclock::now();
@@ -88,6 +97,8 @@ int main(int argc, char *argv[])
     FD_ZERO(&readfds);
     FD_SET(sockfd, &writefds);
     FD_SET(sockfd, &readfds);
+    timeout.tv_sec = 4;
+
     if (select(0, &readfds, &writefds, nullptr, &timeout) == SOCKET_ERROR)
     {
       PING::print_error("Error from select");
@@ -99,21 +110,19 @@ int main(int argc, char *argv[])
       PING::Packet packet_to_send;
       PING::fill_icmp_packet(packet_to_send);
       int len = sizeof(packet_to_send);
-      int ret_send = send(sockfd, reinterpret_cast<const char*>(&packet_to_send), len, 0);
-      sent_packet++;
+      // int ret_send = send(sockfd, reinterpret_cast<const char*>(&packet_to_send), len, 0);
+      int ret_send = sendto(sockfd, (const char*)&packet_to_send, len, 0, (struct sockaddr*)&dest_address, sizeof(dest_address));
+      if (ret_send == SOCKET_ERROR)
+      {
+        PING::print_error("Failed to send");
+        failed_to_send++;
+      }
       send_timer = sysclock::now();
       auto success = packets.insert(std::make_pair(packet_to_send, PING::PacketInfo()));
-      if(success.second == false)
+      if (success.second == false)
         PING::print_error("Something went wrong while sending a package. Package already sent.", 0);
-      if(ret_send == SOCKET_ERROR)
-        PING::print_error("Failed to send");
+      sent_packet++;
       is_one_second_past = false;
-#ifdef DATADUMP
-      std::cout << "Sending packet:" << std::endl;
-      for (int i = 0; i < 16; ++i)
-        std::cout << std::hex << (int)packet_to_send.data[i] << ' ';
-      std::cout << std::dec << std::endl;
-#endif
     }
     if (FD_ISSET(sockfd, &readfds))
     {
@@ -138,16 +147,15 @@ int main(int argc, char *argv[])
       received.resize(total_received);
       PING::Packet received_packet;
       PING::deserialize(received_packet, received);
-#ifdef DATADUMP
-      std::cout << "Receiving packet:" << std::endl;
-      for (int i = 0; i < 16; ++i)
-        std::cout << std::hex << (int)received_packet.data[i] << ' ';
-      std::cout << std::dec << std::endl;
-#endif
       if (received_packet.type != PING::REQUEST_ANSWER || received_packet.code != PING::ECHO)
       {
         std::cerr << "Something with packet went wrong. Received packet type: " << static_cast<int>(received_packet.type) << ", Code: " << static_cast<int>(received_packet.code) << std::endl;
         damaged_packet++;
+        PING::Ip ip;
+        ip = PING::deserialize_ipbuff(received);
+        std::cout << std::hex;
+        std::cout << PING::print_ip(ip.header.receiver_ip) << std::endl;
+        std::cout << PING::print_ip(ip.header.sender_ip) << std::endl;
         continue;
       }
       auto it = packets.find(received_packet);
@@ -168,11 +176,11 @@ int main(int argc, char *argv[])
       it->second.received = true;
     }
     auto now = sysclock::now();
-    if ((now - send_timer).count() > PING::SEC_MS)
+    if (std::chrono::duration_cast<std::chrono::milliseconds>((now - send_timer)) > PING::SECOND)
       is_one_second_past = true;
     if (recv_packet == max_packets)
       break;
-    if (std::chrono::duration_cast<std::chrono::seconds>(now - recv_timer).count() > recv_timeout)
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - recv_timer) > RECV_MAX_TIMEOUT)
     {
       PING::print_error("Receive timeout.", 0);
       break;
@@ -180,10 +188,11 @@ int main(int argc, char *argv[])
   }
   std::cout << std::endl;
   std::cout << "Result:" << std::endl;
-  std::cout << "Sent packets: " << sent_packet << std::endl;
+  std::cout << "Sent packets: " << sent_packet - failed_to_send << std::endl;
   std::cout << "Received packets: " << recv_packet << std::endl;
   std::cout << "Lost: " << sent_packet - recv_packet << std::endl;
   std::cout << "Damaged: " << damaged_packet << std::endl;
+  std::cout << "Failed to send: " << failed_to_send << std::endl;
   closesocket(sockfd);
   PING::winsock_cleanup();
 }
